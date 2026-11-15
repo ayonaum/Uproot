@@ -5,3 +5,6 @@ dist/
 xcuserdata/
 *.xcuserstate
 .DS_Store
+.venv/
+.claude/
+Terminal log.md
