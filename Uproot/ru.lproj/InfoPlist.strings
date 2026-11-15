@@ -1,0 +1,3 @@
+/* Declares Russian as the app's language, so the menus macOS adds are in Russian too. */
+"CFBundleName" = "Uproot";
+"CFBundleDisplayName" = "Uproot";
