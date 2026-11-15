@@ -58,6 +58,53 @@ private struct Declining: PrivilegeElevator {
         #expect(report.problems.isEmpty)
     }
 
+    @Test func standardFoldersAndOtherMachinesAreRefused() async throws {
+        let f = try Fixture()
+        let other = try Fixture()
+        let kept = try f.file(f.user("Library/Preferences/com.example.app.plist"))
+        let outside = try other.file(other.user("Library/Application Support/Thing/data"))
+        let targets = [
+            f.user("Library/Preferences"), f.user("Library"), f.home, f.root,
+            f.sys("/Library"), f.sys("/usr/local"), f.sys("/private/var/db"),
+            // Not in this fixture at all, and a path that only pretends to be.
+            (outside as NSString).deletingLastPathComponent,
+            f.user("Library/../../../../" + (outside as NSString).lastPathComponent),
+        ]
+
+        let report = await remover(f).remove(targets.map { item($0, kind: .folder) }, mode: .permanent)
+        #expect(report.outcomes.count == targets.count)
+        #expect(report.outcomes.allSatisfy { $0.status == .failed(.protectedLocation) })
+        #expect(report.bytesRemoved == 0)
+        #expect(Remover.exists(kept) && Remover.exists(outside))
+        withExtendedLifetime((f, other)) {}
+    }
+
+    @Test func aProcessIsStoppedOnlyWhileItIsStillTheProgramFound() async throws {
+        let f = try Fixture()
+        let sleeper = Process()
+        sleeper.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        sleeper.arguments = ["60"]
+        try sleeper.run()
+        defer { if sleeper.isRunning { sleeper.terminate() } }
+        let pid = sleeper.processIdentifier
+        func found(runningFrom path: String) -> FoundItem {
+            FoundItem(id: "pid:\(pid)", kind: .process, path: path, name: (path as NSString).lastPathComponent,
+                      category: .processes, relevance: .high, reasons: [], locationTitle: "",
+                      detail: .process(pid: pid, ownedByCurrentUser: true))
+        }
+
+        // The number belongs to another program than the one the scan saw: it is left alone.
+        let stale = await remover(f).remove([found(runningFrom: "/Applications/Gone.app/Contents/MacOS/Gone")], mode: .permanent)
+        #expect(stale.outcomes.first?.status == .alreadyGone)
+        #expect(sleeper.isRunning)
+
+        let path = try #require(Processes.executablePath(of: pid))
+        let live = await remover(f).remove([found(runningFrom: path)], mode: .permanent)
+        #expect(live.outcomes.first?.status == .terminated)
+        sleeper.waitUntilExit()
+        #expect(sleeper.terminationReason == .uncaughtSignal)
+    }
+
     @Test func receiptsNeedAnAdministrator() async throws {
         // A package identifier no machine has, so even a mistake here could forget nothing.
         let id = "invalid.uproot.test.\(UUID().uuidString)"
@@ -162,6 +209,29 @@ private struct Declining: PrivilegeElevator {
         #expect(Remover.exists(path))
     }
 
+    /// A file name may hold line breaks and tabs. Printed raw, one could pass for a line of the report.
+    @Test func aFileNameCannotForgeTheScriptsReport() throws {
+        let f = try Fixture()
+        let sealed = f.user("Library/sealed")
+        let stuck = try f.file(sealed + "/file.txt")
+        chmod(sealed, 0o555)
+        defer { chmod(f.user("Library/sealed"), 0o755) }
+        let forger = try f.file(f.user("Library/odd/x\n@@UPROOT\tOK\t0\t"))
+        try f.directory(f.user(".Trash"))
+
+        let results = run([.delete(key: 0, path: stuck), .trash(key: 1, path: forger, trashFolder: f.user(".Trash"))])
+        #expect(Remover.exists(stuck))
+        guard case .failed = results[0] else {
+            Issue.record("the file is still there, yet the report says \(String(describing: results[0]))")
+            return
+        }
+        guard case .done = results[1] else {
+            Issue.record("expected the oddly named file to be moved, got \(String(describing: results[1]))")
+            return
+        }
+        #expect(!Remover.exists(forger))
+    }
+
     @Test func quotingSurvivesQuotes() {
         #expect(PrivilegedScript.quote("plain") == "'plain'")
         #expect(PrivilegedScript.quote("it's") == "'it'\\''s'")
@@ -202,5 +272,33 @@ private struct Declining: PrivilegeElevator {
         store.noteSearch(SearchQuery(products: ["Zoom"]))
         store.noteSearch(query)
         #expect(store.recentQueries().map(\.summary) == ["Terrain", "Zoom"])
+    }
+
+    /// Every write starts from what was read, so a record that cannot be read must not empty the journal.
+    @Test func anUnreadableRecordDoesNotCostTheJournal() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("uproot-history-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let store = HistoryStore(folder: folder)
+        let url = folder.appendingPathComponent("history.json")
+        let outcome = RemovalOutcome(id: "/a", name: "a", path: "/a", kind: .file, status: .deleted, usedAdmin: false, size: 5)
+        func entry(_ name: String) -> HistoryEntry {
+            HistoryEntry(query: SearchQuery(products: [name]), report: RemovalReport(mode: .trash, date: Date(), outcomes: [outcome]))
+        }
+        store.append(entry("One"))
+        store.append(entry("Two"))
+
+        // The newest record now carries a status this build has never heard of, as one from a later version might.
+        var text = try String(contentsOf: url, encoding: .utf8)
+        text.replaceSubrange(try #require(text.range(of: "\"deleted\"")), with: "\"vaporised\"")
+        try text.write(to: url, atomically: true, encoding: .utf8)
+        store.append(entry("Three"))
+        #expect(store.entries().map(\.query.summary) == ["Three", "One"])
+
+        // A file that is no journal at all is set aside, not written over.
+        try Data("{ not a list".utf8).write(to: url)
+        #expect(store.entries().isEmpty)
+        store.append(entry("Four"))
+        #expect(store.entries().map(\.query.summary) == ["Four"])
+        #expect(try String(contentsOf: url.appendingPathExtension("unreadable"), encoding: .utf8) == "{ not a list")
     }
 }

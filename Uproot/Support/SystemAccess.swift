@@ -23,7 +23,9 @@ enum FullDiskAccess {
     @MainActor static func relaunch() {
         let configuration = NSWorkspace.OpenConfiguration()
         configuration.createsNewApplicationInstance = true
-        NSWorkspace.shared.openApplication(at: Bundle.main.bundleURL, configuration: configuration) { _, _ in
+        NSWorkspace.shared.openApplication(at: Bundle.main.bundleURL, configuration: configuration) { _, error in
+            // Quit only once the new copy is up; otherwise a failed relaunch would just close the app.
+            guard error == nil else { return }
             DispatchQueue.main.async { NSApp.terminate(nil) }
         }
     }

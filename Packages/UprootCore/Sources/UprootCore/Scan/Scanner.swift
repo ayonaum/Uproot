@@ -106,8 +106,9 @@ final class ScanRun: @unchecked Sendable {
         let layout = ScanLayout(environment: env, options: query.options,
                                 externalVolumes: volumes.map(\.mountPoint))
         let fileSearch = query.target == .files
-        let collector = HitCollector(terms: terms, layout: layout, options: query.options, excludes: query.excludes,
-                                     listsInsideMatches: fileSearch)
+        let resolver = PlacementResolver(environment: env)
+        let collector = HitCollector(terms: terms, layout: layout, placement: resolver, options: query.options,
+                                     excludes: query.excludes, listsInsideMatches: fileSearch)
         let walker = ParallelWalker(visit: collector.visit, onUnreadable: collector.noteUnreadable)
         shared.withLock {
             $0.walker = walker
@@ -122,7 +123,6 @@ final class ScanRun: @unchecked Sendable {
         let entries = walker.snapshot.entriesVisited
         shared.withLock { $0.entries = entries }
         var hits = collector.hits
-        let resolver = PlacementResolver(environment: env)
         var identifiers: [String] = []
 
         if fileSearch && !isCancelled {
@@ -148,7 +148,8 @@ final class ScanRun: @unchecked Sendable {
             // 3. Installer receipts and what their packages put on disk.
             setStage(.packages)
             let allTerms = TermSet(products: terms.products + identifierTerms, vendors: terms.vendors)
-            var assembler = Assembler(environment: env, resolver: resolver, terms: allTerms)
+            var assembler = Assembler(environment: env, resolver: resolver, terms: allTerms,
+                                      removableAppleIdentifiers: BundleInspector.removableAppleIdentifiers(of: Array(hits.values)))
             let receiptItems = scanReceipts(terms: allTerms, resolver: resolver, collector: collector, hits: &hits)
 
             // 4. Items for everything matched by name, then what hangs off them.
@@ -264,7 +265,12 @@ final class ScanRun: @unchecked Sendable {
         for packageID in receipts.packageIDs() {
             let evaluation = terms.evaluate(NameFolding.fold(packageID))
             guard !evaluation.isEmpty else { continue }
-            let verdict = RelevanceScorer.score(.init(product: evaluation.product, vendor: evaluation.vendor, placement: slot))
+            var verdict = RelevanceScorer.score(.init(product: evaluation.product, vendor: evaluation.vendor, placement: slot))
+            // Apple's own packages are shown, never preselected, and their payload is the system's.
+            if verdict.relevance == .high, Assembler.carriesAppleIdentifier(packageID) {
+                verdict.relevance = .medium
+                verdict.reasons.append(.partOfMacOS)
+            }
             let record = receipts.record(for: packageID)
             if collector.isExcluded(record.plistPath) { continue }
             items.append(FoundItem(id: "receipt:" + packageID, kind: .receipt, path: record.plistPath, name: packageID,
@@ -277,7 +283,7 @@ final class ScanRun: @unchecked Sendable {
             // their own names say nothing.
             guard verdict.relevance == .high, !isCancelled else { continue }
             for path in receipts.ownedRoots(payload: receipts.payload(of: record)) {
-                if collector.isExcluded(path) { continue }
+                if collector.isExcluded(path) || resolver.isProtected(path) { continue }
                 if var existing = hits[path] {
                     existing.extraReasons.append(.installedByPackage(id: packageID))
                     hits[path] = existing
@@ -367,7 +373,9 @@ final class ScanRun: @unchecked Sendable {
 
     /// Processes running out of something found, or named exactly like the product.
     private func addProcesses(terms: TermSet, to assembler: inout Assembler) {
-        for process in Processes.all() {
+        // What macOS itself runs is not a leftover, whatever it is called: stopping "WindowServer"
+        // or "loginwindow" would end the session.
+        for process in Processes.all() where !Processes.isPartOfMacOS(process) {
             var reason: MatchReason?
             if let item = assembler.trustedItem(containing: process.executablePath) {
                 reason = .runsFrom(path: item.path)

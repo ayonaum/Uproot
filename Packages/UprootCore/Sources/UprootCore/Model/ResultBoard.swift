@@ -149,6 +149,25 @@ public struct ResultBoard: Sendable {
         }
     }
 
+    /// Takes items out of the list while leaving them on disk.
+    ///
+    /// A checked folder above a hidden item would take it along when removed. So the folder is
+    /// unchecked in favour of what else it holds, and is told that it now holds something
+    /// outside the results, which keeps it from being checked again as a whole by itself.
+    public mutating func hide(ids: Set<String>) {
+        for id in ids {
+            setChecked(id, false)
+            guard let parentID = item(id)?.parentID, !ids.contains(parentID), let parent = indexByID[parentID] else { continue }
+            items[parent].unrelatedChildCount += 1
+            var ancestor: String? = parentID
+            while let current = ancestor, let index = indexByID[current] {
+                items[index].reasons.removeAll { $0 == .holdsOnlyFoundItems }
+                ancestor = items[index].parentID
+            }
+        }
+        remove(ids: ids)
+    }
+
     /// Drops items that no longer exist, along with everything nested in them.
     public mutating func remove(ids: some Sequence<String>) {
         var gone = Set(ids)

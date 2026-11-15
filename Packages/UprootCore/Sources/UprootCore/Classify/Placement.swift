@@ -33,6 +33,8 @@ struct PlacementResolver: Sendable {
     /// Rules by base path, so the longest matching base wins.
     private let rules: [String: Rule]
     private let hostDataBases: [String]
+    /// See `isProtected`.
+    private let protectedPaths: Set<String>
 
     init(environment env: ScanEnvironment) {
         self.environment = env
@@ -74,9 +76,11 @@ struct PlacementResolver: Sendable {
                            "Keyboard Layouts", "ColorPickers", "Components", "Contextual Menu Items", "Frameworks",
                            "Filesystems", "Scripts", "ScriptingAdditions", "Address Book Plug-Ins", "Workflows",
                            "Automator", "Fonts", "Sounds", "Printers", "Image Capture", "Plug-Ins", "Compositions",
-                           "Video", "CoreMediaIO", "Graphics", "Java", "Widgets", "Speech", "Keychains"] {
+                           "Video", "CoreMediaIO", "Graphics", "Java", "Widgets", "Speech"] {
                 add(library + "/" + folder, .extensions, depth: 1)
             }
+            // Passwords and certificates are the user's own, like documents: shown, never preselected.
+            add(library + "/Keychains", .personalFiles, depth: 0, personal: true)
             add(library + "/Receipts", .receipts, depth: 1)
             add(library + "/Mobile Documents", .personalFiles, depth: 0, personal: true)
             add(library + "/CloudStorage", .personalFiles, depth: 0, personal: true)
@@ -105,10 +109,15 @@ struct PlacementResolver: Sendable {
             }
         }
         add(env.sys("/opt"), .commandLine, depth: 1)
-        add(env.sys("/private/etc"), .commandLine, depth: 1,
-            transparent: ["sudoers.d", "paths.d", "manpaths.d", "newsyslog.d", "pam.d", "asl"])
-        add(env.sys("/private/var"), .other, depth: 1)
-        add(env.sys("/private/var/db"), .other, depth: 1)
+        // Under /etc and /var the system's own files carry the plainest names there are: "hosts",
+        // "sudo", "vm". A name alone never marks one of them as a program's. Only the folders
+        // that exist for other software to drop a file into are install slots.
+        add(env.sys("/private/etc"), .commandLine, depth: 0)
+        for folder in ["sudoers.d", "paths.d", "manpaths.d"] {
+            add(env.sys("/private/etc/" + folder), .commandLine, depth: 1)
+        }
+        add(env.sys("/private/var"), .other, depth: 0)
+        add(env.sys("/private/var/db"), .other, depth: 0)
         add(env.sys("/private/var/log"), .logs, depth: 1)
         add(env.sys("/private/var/tmp"), .caches, depth: 1)
         add(env.sys("/private/tmp"), .caches, depth: 1)
@@ -121,10 +130,49 @@ struct PlacementResolver: Sendable {
             home + "/Documents/Image-Line/FL Studio/Presets/Plugin database",
             home + "/Documents/Image-Line/FL Studio/Presets/Plugin presets",
         ]
+
+        // Every folder the rules are anchored on is a standard one, bar two that belong to a
+        // single program and go when it goes.
+        var protected = Set(rules.keys)
+        protected.subtract([env.sys("/opt/homebrew"), home + "/Applications/CrossOver"])
+        protected.formUnion(hostDataBases)
+        protected.formUnion(ScanLayout.systemData(environment: env))
+        protected.formUnion([
+            env.sys("/Applications/Utilities"),
+            env.sys("/Library/Developer"), home + "/Library/Developer",
+            // Shared by the AAX plug-ins of every vendor.
+            env.sys("/Library/Application Support/Avid"), env.sys("/Library/Application Support/Avid/Audio"),
+            env.sys("/Library/Application Support/Digidesign"),
+        ])
+        self.protectedPaths = protected
     }
 
     /// True for the standard folders the rules are anchored on.
     func isRuleBase(_ path: String) -> Bool { rules[path] != nil }
+
+    /// True for the folders macOS is laid out in, the ones many programs share and the ones its
+    /// built-in apps keep the user's data in.
+    ///
+    /// None of them is the leftover of one program, however a search is spelled: "Preferences",
+    /// "Audio" or "VST3" as a search word must find what is in the folder, not the folder. The
+    /// scan does not offer them and the remover refuses them.
+    func isProtected(_ path: String) -> Bool {
+        if protectedPaths.contains(path) { return true }
+        let root = environment.systemRoot
+        // Not on the machine being scanned, or not a plain absolute path: not ours to judge.
+        guard path.hasPrefix(root + "/"), !path.contains("/../"), !path.hasSuffix("/..") else { return true }
+        // The folders the home folder sits in.
+        if environment.home.hasPrefix(path + "/") { return true }
+
+        let parts = path.dropFirst(root.count).split(separator: "/", omittingEmptySubsequences: true)
+        // The disk root and what lies directly in it: "/Library", "/usr". All of "/System".
+        guard let top = parts.first, parts.count > 1, top != "System" else { return true }
+        // "/private/etc", "/usr/local", other people's home folders, mount points.
+        if parts.count == 2, ["private", "usr", "Users", "Volumes"].contains(top) { return true }
+        // "/private/var/db", "/private/var/vm", "/private/var/root".
+        if parts.count == 3, top == "private", parts[1] == "var" { return true }
+        return false
+    }
 
     func resolve(path: String) -> Placement {
         let components = path.split(separator: "/", omittingEmptySubsequences: true).map(String.init)

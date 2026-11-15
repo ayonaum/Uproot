@@ -32,8 +32,10 @@ struct PrivilegedScript: Sendable {
     func render() -> String {
         var lines = [
             "PATH=/usr/bin:/bin:/usr/sbin:/sbin; export PATH",
-            "ok() { printf '\(Self.marker)\\tOK\\t%s\\t%s\\n' \"$1\" \"$2\"; }",
-            "fail() { printf '\(Self.marker)\\tFAIL\\t%s\\t%s\\n' \"$1\" \"$2\"; }",
+            // A file name may hold a line break or a tab; printed raw it could pass for a report line.
+            "plain() { printf %s \"$1\" | tr '\\n\\r\\t' '   '; }",
+            "ok() { printf '\(Self.marker)\\tOK\\t%s\\t%s\\n' \"$1\" \"$(plain \"$2\")\"; }",
+            "fail() { printf '\(Self.marker)\\tFAIL\\t%s\\t%s\\n' \"$1\" \"$(plain \"$2\")\"; }",
             "gone() { [ ! -e \"$1\" ] && [ ! -L \"$1\" ]; }",
             "unlock() { chflags -R nouchg,noschg \"$1\" 2>/dev/null; }",
             "del() {",
@@ -44,7 +46,8 @@ struct PrivilegedScript: Sendable {
             "}",
             "trash() {",
             "  if gone \"$2\"; then ok \"$1\" ''; return; fi",
-            "  mkdir -p \"$3\" 2>/dev/null",
+            // A Trash made here would be root's; hand it to the user, or the Finder cannot use it.
+            "  [ -d \"$3\" ] || { mkdir -p \"$3\" 2>/dev/null && chown \(uid):\(gid) \"$3\" 2>/dev/null; }",
             "  dst=\"$3/$4$5\"; n=1",
             "  while ! gone \"$dst\"; do n=$((n+1)); dst=\"$3/$4 $n$5\"; done",
             "  unlock \"$2\"",

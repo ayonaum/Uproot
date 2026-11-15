@@ -42,14 +42,18 @@ struct Receipts: Sendable {
         var prefix = record.installPrefix
         while prefix.hasPrefix("/") { prefix.removeFirst() }
         while prefix.hasSuffix("/") { prefix.removeLast() }
-        let base = environment.sys("") + (prefix.isEmpty ? "" : "/" + prefix)
 
         var paths: [String] = []
         for line in output.stdout.split(separator: "\n") {
             var relative = Substring(line)
             if relative.hasPrefix("./") { relative = relative.dropFirst(2) } else if relative == "." { continue }
-            guard !relative.isEmpty else { continue }
-            paths.append(base + "/" + relative)
+            guard !relative.isEmpty, !relative.split(separator: "/").contains("..") else { continue }
+            var full = prefix.isEmpty ? String(relative) : prefix + "/" + relative
+            // Packages write through the "/etc", "/var" and "/tmp" links; the scan names the real folders.
+            for alias in ["etc", "var", "tmp"] where full == alias || full.hasPrefix(alias + "/") {
+                full = "private/" + full
+            }
+            paths.append(environment.sys("/") + full)
         }
         return paths
     }
@@ -77,11 +81,17 @@ struct Receipts: Sendable {
             guard lstat(path, &info) == 0 else { continue }
             let isDirectory = (info.st_mode & S_IFMT) == S_IFDIR
             let name = (path as NSString).lastPathComponent
+            let payloadChildren = children[path] ?? []
+            if (info.st_mode & S_IFMT) == S_IFLNK, !payloadChildren.isEmpty {
+                // A folder to the package, a link on this disk: the package installed through it.
+                // The link is not the package's to take; what it put behind the link may be.
+                stack.append(contentsOf: payloadChildren)
+                continue
+            }
             guard isDirectory, !Bundles.isBundle(name: name) else {
                 roots.append(path)
                 continue
             }
-            let payloadChildren = children[path] ?? []
             if placement.isStandardDirectory(path) {
                 stack.append(contentsOf: payloadChildren)
                 continue
@@ -103,7 +113,7 @@ struct Receipts: Sendable {
 extension PlacementResolver {
     /// Folders that belong to macOS or are shared by many programs, and so are never one package's own.
     func isStandardDirectory(_ path: String) -> Bool {
-        if isRuleBase(path) { return true }
+        if isRuleBase(path) || isProtected(path) { return true }
         let env = environment
         let system = env.sys("")
         let fixed: Set<String> = [

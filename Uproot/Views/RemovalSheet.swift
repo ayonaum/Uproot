@@ -42,7 +42,9 @@ private struct Confirmation: View {
             }
 
             ScrollView {
-                VStack(spacing: 0) {
+                // Lazy: a few thousand checked files must not build a few thousand rows, each
+                // with its Finder icon, before the sheet can open.
+                LazyVStack(spacing: 0) {
                     ForEach(Array(session.items.enumerated()), id: \.element.id) { index, item in
                         if index > 0 { Divider().padding(.leading, 40) }
                         HStack(spacing: 9) {
@@ -103,7 +105,8 @@ private struct Confirmation: View {
                        action: model.performRemoval)
                     .buttonStyle(.borderedProminent)
                     .tint(.red)
-                    .keyboardShortcut(.defaultAction)
+                    // Return confirms only what can be taken back; deleting for good takes a click.
+                    .keyboardShortcut(session.mode == .trash ? .defaultAction : nil)
             }
             .controlSize(.large)
         }

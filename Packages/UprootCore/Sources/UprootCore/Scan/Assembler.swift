@@ -8,17 +8,21 @@ struct Assembler {
     private let terms: TermSet
     /// In a file search matched folders do not swallow the matches inside them, and no folder is promoted.
     private let fileSearch: Bool
+    /// Lowercased identifiers of the Apple apps found that can be uninstalled; see `BundleInspector`.
+    private let removableApple: [String]
     private var items: [String: FoundItem] = [:]
     /// Paths of items whose own name matched the product; whatever lies inside them is implied.
     private var owningPaths = Set<String>()
     /// Folders that hold found items without being one themselves: vendor folders, package folders.
     private var containerPaths = Set<String>()
 
-    init(environment: ScanEnvironment, resolver: PlacementResolver, terms: TermSet, fileSearch: Bool = false) {
+    init(environment: ScanEnvironment, resolver: PlacementResolver, terms: TermSet, fileSearch: Bool = false,
+         removableAppleIdentifiers: [String] = []) {
         self.env = environment
         self.resolver = resolver
         self.terms = terms
         self.fileSearch = fileSearch
+        self.removableApple = removableAppleIdentifiers.map { $0.lowercased() }
     }
 
     func contains(path: String) -> Bool { items[path] != nil }
@@ -84,12 +88,19 @@ struct Assembler {
                                                   underVendor: hit.underVendor, foreignBundle: hit.foreignBundle,
                                                   corroborated: corroborated && hit.hasProductMatch,
                                                   fileSearch: fileSearch, placement: placement))
-        let relevance = hit.forcedRelevance ?? verdict.relevance
+        var relevance = hit.forcedRelevance ?? verdict.relevance
+        var reasons = verdict.reasons + extraReasons
 
         let name = (hit.path as NSString).lastPathComponent
+        // Apps built into macOS cannot be uninstalled, and what they keep is the user's own:
+        // a search for "Notes" must not come back with the notes ticked for removal.
+        if relevance == .high, belongsToMacOS(name: name, info: info) {
+            relevance = .medium
+            reasons.append(.partOfMacOS)
+        }
         items[hit.path] = FoundItem(
             id: hit.path, kind: kind, path: hit.path, name: name, category: placement.category,
-            relevance: relevance, reasons: verdict.reasons + extraReasons,
+            relevance: relevance, reasons: reasons,
             locationTitle: placement.locationTitle, owner: placement.owner,
             needsAdmin: Self.needsAdmin(path: hit.path, info: info, uid: env.uid),
             detail: detail,
@@ -97,9 +108,33 @@ struct Assembler {
 
         if hit.hasProductMatch && !(fileSearch && isDirectory && !hit.isBundle) {
             owningPaths.insert(hit.path)
-        } else if isDirectory && !hit.isBundle && !fileSearch {
+        } else if isDirectory && !hit.isBundle && !fileSearch && hit.forcedRelevance == nil {
+            // A folder a package owns outright is not a vendor folder: nothing in it is "unrelated".
             containerPaths.insert(hit.path)
         }
+    }
+
+    /// Whether an item is macOS's own rather than what a program left behind: the system forbids
+    /// removing it, or it carries the name of an Apple app other than the removable ones found.
+    private func belongsToMacOS(name: String, info: stat) -> Bool {
+        if Self.isGuardedBySystem(info) { return true }
+        let lowered = name.lowercased()
+        // ".GlobalPreferences.plist" holds the settings shared by every app.
+        guard Self.carriesAppleIdentifier(lowered) || lowered.hasPrefix(".globalpreferences") else { return false }
+        return !removableApple.contains { lowered.hasPrefix($0) || lowered.contains("." + $0) }
+    }
+
+    /// True for names such as "com.apple.Notes.plist" and "group.com.apple.notes".
+    static func carriesAppleIdentifier(_ name: String) -> Bool {
+        let lowered = name.lowercased()
+        return lowered.hasPrefix("com.apple.") || lowered.contains(".com.apple.")
+    }
+
+    /// macOS marks what must stay: "restricted" for what system integrity protection covers,
+    /// "sunlnk" for folders such as /Library/Preferences/SystemConfiguration. Not even root may
+    /// remove these, and trying would still empty a folder before failing on the folder itself.
+    static func isGuardedBySystem(_ info: stat) -> Bool {
+        info.st_flags & UInt32(SF_RESTRICTED | SF_NOUNLINK) != 0
     }
 
     mutating func finish() -> [FoundItem] {
@@ -160,7 +195,7 @@ struct Assembler {
     /// Whether everything in a folder is a found item the scan is sure of, and how many
     /// things directly inside are not part of the results at all.
     private func coverage(of folder: String) -> (complete: Bool, unrelated: Int) {
-        let entries = Self.entries(of: folder)
+        guard let entries = Self.entries(of: folder) else { return (false, 0) }
         var unrelated = 0
         var complete = true
         for entry in entries {
@@ -179,9 +214,7 @@ struct Assembler {
     }
 
     private func isFullyCovered(_ folder: String, depth: Int) -> Bool {
-        guard depth <= 6 else { return false }
-        let entries = Self.entries(of: folder)
-        guard entries.count <= 500 else { return false }
+        guard depth <= 6, let entries = Self.entries(of: folder), entries.count <= 500 else { return false }
         for entry in entries {
             let path = folder + "/" + entry
             if let item = items[path] {
@@ -193,8 +226,10 @@ struct Assembler {
         return true
     }
 
-    private static func entries(of folder: String) -> [String] {
-        ((try? FileManager.default.contentsOfDirectory(atPath: folder)) ?? []).filter { !Receipts.ignorable.contains($0) }
+    /// What a folder holds, or nil when it cannot be read. A folder that cannot be read is not
+    /// an empty one: what is in it is unknown, so nothing above it may be called fully covered.
+    private static func entries(of folder: String) -> [String]? {
+        (try? FileManager.default.contentsOfDirectory(atPath: folder))?.filter { !Receipts.ignorable.contains($0) }
     }
 
     private static func isPlainDirectory(_ path: String) -> Bool {

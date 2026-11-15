@@ -12,6 +12,9 @@ set -eu
 [ $# -eq 1 ] || { echo "usage: $0 <empty folder>" >&2; exit 2; }
 ROOT=$1
 [ ! -e "$ROOT" ] || [ -z "$(ls -A "$ROOT" 2>/dev/null)" ] || { echo "$ROOT is not empty" >&2; exit 1; }
+# The app takes the fixture by its full path; print that, whatever was typed here.
+mkdir -p "$ROOT"
+ROOT=$(cd "$ROOT" && pwd -P)
 
 HOME_DIR="$ROOT/Users/tester"
 mkdir -p "$ROOT/Applications" "$ROOT/Library" "$ROOT/Users/Shared" "$ROOT/usr/local/bin" "$ROOT/opt" \

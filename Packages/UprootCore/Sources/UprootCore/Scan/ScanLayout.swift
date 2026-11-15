@@ -45,6 +45,33 @@ struct ScanLayout: Sendable {
         ".TemporaryItems", ".MobileBackups", ".vol", "node_modules", ".git", ".svn", ".hg", "__pycache__",
     ]
 
+    /// Where macOS and its built-in apps keep the user's mail, messages, bookmarks and the like.
+    /// The scan stays out of these folders, and they are never offered for removal.
+    static func systemData(environment env: ScanEnvironment) -> [String] {
+        let library = env.home + "/Library"
+        return [
+            env.home + "/.Trash",
+            library + "/Mail",
+            library + "/Messages",
+            library + "/Safari",
+            library + "/Calendars",
+            library + "/Accounts",
+            library + "/Metadata",
+            library + "/Biome",
+            library + "/Application Support/MobileSync",
+            library + "/Application Support/AddressBook",
+            library + "/Application Support/CloudDocs",
+            env.sys("/Library/Apple"),
+            env.sys("/Library/Updates"),
+            env.sys("/Library/OSAnalytics"),
+            env.sys("/Library/Managed Preferences"),
+            // Network, audio device and directory settings of the machine itself.
+            env.sys("/Library/Preferences/SystemConfiguration"),
+            env.sys("/Library/Preferences/OpenDirectory"),
+            env.sys("/Library/Preferences/Audio"),
+        ]
+    }
+
     /// File types that are downloads of software rather than the user's own work.
     static let installerExtensions: Set<String> = [
         "dmg", "pkg", "mpkg", "zip", "7z", "rar", "tar", "gz", "tgz", "bz2", "xz", "iso", "exe", "msi",
@@ -78,23 +105,13 @@ struct ScanLayout: Sendable {
         self.roots = roots
         self.skippedNames = Self.skippedNames
 
-        self.skippedPaths = [
-            home + "/.Trash",
+        self.skippedPaths = Set(Self.systemData(environment: env)).union([
             library + "/Developer/CoreSimulator",
             library + "/Developer/Xcode/DerivedData",
             library + "/Developer/Xcode/iOS DeviceSupport",
             library + "/Developer/Xcode/Archives",
-            library + "/Metadata",
-            library + "/Biome",
-            library + "/Mail",
-            library + "/Messages",
-            library + "/Application Support/MobileSync",
-            library + "/Application Support/AddressBook",
-            library + "/Application Support/CloudDocs",
             env.sys("/Library/Developer"),
-            env.sys("/Library/Apple"),
-            env.sys("/Library/Updates"),
-        ]
+        ])
 
         // Other apps' private data: reading names is enough, and going deeper trips privacy prompts.
         self.shallowPaths = [

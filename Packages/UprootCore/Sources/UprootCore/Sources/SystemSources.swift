@@ -63,16 +63,30 @@ enum Processes {
 
         let own = getpid()
         var result: [RunningProcess] = []
-        var pathBuffer = [CChar](repeating: 0, count: 4 * Int(MAXPATHLEN))
         for pid in pids.prefix(filled) where pid > 0 && pid != own {
-            let length = proc_pidpath(pid, &pathBuffer, UInt32(pathBuffer.count))
-            guard length > 0 else { continue }
+            guard let path = executablePath(of: pid) else { continue }
             var info = proc_bsdinfo()
             let size = Int32(MemoryLayout<proc_bsdinfo>.size)
             let uid: uid_t = proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size ? info.pbi_uid : UInt32.max
-            result.append(RunningProcess(pid: pid, executablePath: String(nullTerminated: pathBuffer), uid: uid))
+            result.append(RunningProcess(pid: pid, executablePath: path, uid: uid))
         }
         return result
+    }
+
+    /// The program a process is running right now, or nil when there is no such process.
+    static func executablePath(of pid: pid_t) -> String? {
+        var buffer = [CChar](repeating: 0, count: 4 * Int(MAXPATHLEN))
+        guard proc_pidpath(pid, &buffer, UInt32(buffer.count)) > 0 else { return nil }
+        return String(nullTerminated: buffer)
+    }
+
+    /// True for launchd and for anything running out of the system's own folders.
+    static func isPartOfMacOS(_ process: RunningProcess) -> Bool {
+        if process.pid == 1 { return true }
+        let path = process.executablePath
+        // "/usr/local" is where other software installs itself, unlike the rest of "/usr".
+        if path.hasPrefix("/usr/local/") { return false }
+        return ["/System/", "/usr/", "/bin/", "/sbin/", "/Library/Apple/"].contains { path.hasPrefix($0) }
     }
 
     static func isRunning(_ pid: pid_t) -> Bool {

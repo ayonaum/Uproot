@@ -132,7 +132,9 @@ final class AppModel {
 
     init(launch: LaunchOptions = LaunchOptions()) {
         self.launch = launch
-        if let root = launch.fixtureRoot {
+        // `Launcher` refuses to start with a fixture folder that fails the check, so the real
+        // disk is only ever reached here when no fixture was asked for.
+        if let root = launch.fixtureRoot, launch.fixtureProblem == nil {
             environment = ScanEnvironment(systemRoot: root, home: root + "/Users/tester")
             store = HistoryStore(folder: URL(fileURLWithPath: root + "/.uproot"))
             isFixture = true
@@ -201,6 +203,9 @@ final class AppModel {
     // MARK: Scanning
 
     func startScan() {
+        // A removal works from the list on screen and ends with a search of its own.
+        // A second search underneath it would leave the two fighting over the result.
+        guard removal == nil else { return }
         commitDrafts()
         let query = query
         guard query.hasSearchableTerms else {
@@ -267,10 +272,12 @@ final class AppModel {
     private func measureSizes() {
         sizeTask?.cancel()
         let items = board.items.filter(\.isOnDisk).sorted { $0.relevance > $1.relevance }
+        // Each chunk redraws the whole list, so a long list gets bigger chunks, not more redraws.
+        let chunkSize = max(40, items.count / 50)
         sizeTask = Task {
             var start = 0
             while start < items.count {
-                let chunk = Array(items[start..<min(start + 40, items.count)])
+                let chunk = Array(items[start..<min(start + chunkSize, items.count)])
                 start += chunk.count
                 let sizes = await DiskUsage.sizes(of: chunk)
                 guard !Task.isCancelled else { return }
@@ -354,7 +361,7 @@ final class AppModel {
 
     /// Leaves an item out of this search's results without touching it on disk.
     func hide(_ ids: Set<String>) {
-        board.remove(ids: ids)
+        board.hide(ids: ids)
         highlighted.subtract(ids)
         rebuildSections()
     }
@@ -362,8 +369,9 @@ final class AppModel {
     // MARK: Removal
 
     func requestRemoval() {
+        // While a search runs, the list is the previous search's and about to be replaced.
         let selection = board.selection
-        guard !selection.isEmpty, removal == nil else { return }
+        guard phase == .results, !selection.isEmpty, removal == nil else { return }
         removal = RemovalSession(items: selection, mode: removalMode)
     }
 
@@ -383,6 +391,13 @@ final class AppModel {
             store.append(HistoryEntry(query: query, report: report))
             history = store.entries()
 
+            // What went is not a result any more. The second look below takes a while, and the
+            // list must not go on offering, checked, the things that were just removed.
+            let gone = Set(report.succeeded.map(\.id))
+            board.remove(ids: gone)
+            highlighted.subtract(gone)
+            rebuildSections()
+
             // Look again, the way one reruns `find` after `rm`, and show what is still there.
             session.verification = .checking
             scanGeneration += 1
@@ -390,6 +405,7 @@ final class AppModel {
             let fresh = await scan(query, generation: generation)
             guard generation == scanGeneration else { return }
             apply(fresh)
+            phase = .results
             session.verification = .done(sure: fresh.items.filter { $0.relevance == .high }.count,
                                          toReview: fresh.items.filter { $0.relevance == .medium }.count)
         }
@@ -456,15 +472,40 @@ struct LaunchOptions {
             case "--vendor": if let name = value() { vendors.append(name) }
             case "--files": target = .files
             case "--scan": startScan = true
-            case "--fixture": fixtureRoot = value()
+            case "--fixture":
+                // No value at all still means "a fixture was asked for", so that it fails the check.
+                let path = value() ?? ""
+                // The real path: "/tmp/x" and "/private/tmp/x" must not look like two places.
+                fixtureRoot = realpath(path, nil).map { resolved in
+                    defer { free(resolved) }
+                    return String(cString: resolved)
+                } ?? path
             case "--show": show = value()
             case "--filter": filter = value()
             case "--window":
                 let parts = (value() ?? "").split(separator: "x").compactMap { Double($0) }
-                if parts.count == 2 { windowSize = CGSize(width: parts[0], height: parts[1]) }
+                if parts.count == 2, parts.allSatisfy({ (200...10_000).contains($0) }) {
+                    windowSize = CGSize(width: parts[0], height: parts[1])
+                }
             case "--remove": removeAfterScan = true
             default: break
             }
         }
+    }
+
+    /// Why the `--fixture` folder cannot be used, or nil when it can or none was given.
+    ///
+    /// A fixture run may remove things without asking. An empty variable in a script, a typo or
+    /// "/" must therefore stop the launch, never quietly turn it into a run on the real disk.
+    var fixtureProblem: String? {
+        guard let root = fixtureRoot else { return nil }
+        guard root.hasPrefix("/"), root != "/" else {
+            return "--fixture needs the full path of a fixture folder, not \"\(root)\""
+        }
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: root + "/Users/tester", isDirectory: &isDirectory), isDirectory.boolValue else {
+            return "\(root) is not a fixture: it has no Users/tester folder (build one with Tools/make-fixture.sh)"
+        }
+        return nil
     }
 }

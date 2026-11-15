@@ -30,7 +30,7 @@ public struct HistoryStore: Sendable {
 
     /// Past removals, newest first.
     public func entries() -> [HistoryEntry] {
-        read([HistoryEntry].self, from: journalURL) ?? []
+        read(HistoryEntry.self, from: journalURL)
     }
 
     public func append(_ entry: HistoryEntry) {
@@ -52,7 +52,7 @@ public struct HistoryStore: Sendable {
 
     /// Recent searches, newest first.
     public func recentQueries() -> [SearchQuery] {
-        read([SearchQuery].self, from: recentURL) ?? []
+        read(SearchQuery.self, from: recentURL)
     }
 
     public func noteSearch(_ query: SearchQuery) {
@@ -65,11 +65,37 @@ public struct HistoryStore: Sendable {
         try? FileManager.default.removeItem(at: recentURL)
     }
 
-    private func read<T: Decodable>(_ type: T.Type, from url: URL) -> T? {
-        guard let data = try? Data(contentsOf: url) else { return nil }
+    /// Reads a list of records. Every caller goes on to write the list back with one record
+    /// added, so whatever cannot be read here must not simply count as "nothing there".
+    private func read<T: Decodable>(_ type: T.Type, from url: URL) -> [T] {
+        guard let data = try? Data(contentsOf: url) else { return [] }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        return try? decoder.decode(type, from: data)
+        if let list = try? decoder.decode(LossyList<T>.self, from: data) { return list.elements }
+        // Not a list at all. Set the file aside rather than let the next write replace it.
+        let aside = url.appendingPathExtension("unreadable")
+        try? FileManager.default.removeItem(at: aside)
+        try? FileManager.default.moveItem(at: url, to: aside)
+        return []
+    }
+
+    /// A list that leaves out the records it cannot decode, such as one written by a newer
+    /// build with a status this one does not know, instead of failing as a whole.
+    private struct LossyList<Element: Decodable>: Decodable {
+        private struct Skipped: Decodable {}
+        var elements: [Element] = []
+
+        init(from decoder: any Decoder) throws {
+            var container = try decoder.unkeyedContainer()
+            while !container.isAtEnd {
+                if let element = try? container.decode(Element.self) {
+                    elements.append(element)
+                } else {
+                    // A failed decode leaves the container where it was; step over the record.
+                    _ = try container.decode(Skipped.self)
+                }
+            }
+        }
     }
 
     private func write(_ value: some Encodable, to url: URL) {

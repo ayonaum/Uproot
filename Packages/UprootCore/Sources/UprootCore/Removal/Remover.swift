@@ -29,6 +29,7 @@ public struct Remover: Sendable {
         var steps: [PrivilegedScript.Step] = []
         var keyed: [Int: FoundItem] = [:]
         var removedAudioUnit = false
+        let placement = PlacementResolver(environment: environment)
 
         func record(_ item: FoundItem, _ status: RemovalOutcome.Status, admin: Bool = false) {
             outcomes[item.id] = RemovalOutcome(id: item.id, name: item.name, path: item.path, kind: item.kind,
@@ -45,6 +46,12 @@ public struct Remover: Sendable {
             switch item.kind {
             case .process:
                 guard case .process(let pid, _) = item.detail else { continue }
+                // The scan may be minutes old and process numbers are reused: stop the process
+                // only while it is still the program that was found.
+                guard Processes.executablePath(of: pid) == item.path else {
+                    record(item, .alreadyGone)
+                    continue
+                }
                 switch Self.terminate(pid) {
                 case .stopped: record(item, .terminated)
                 case .notPermitted: postpone(item) { .stopProcess(key: $0, pid: pid) }
@@ -64,6 +71,13 @@ public struct Remover: Sendable {
                 }
 
             case .file, .folder, .bundle, .symlink:
+                // Whatever the list says, the folders macOS is built on stay where they are, and
+                // so does everything outside the machine this remover was given and everything
+                // the system itself has marked as not to be removed.
+                guard !placement.isProtected(item.path), !Self.isGuardedBySystem(item.path) else {
+                    record(item, .failed(.protectedLocation))
+                    continue
+                }
                 if case .launchJob(let label, let isSystemDomain) = item.detail, !isFixture {
                     if isSystemDomain {
                         steps.append(.bootout(label: label))
@@ -145,8 +159,8 @@ public struct Remover: Sendable {
         var attempt = attemptRemoval(path, mode: mode)
         if case .needsAdmin = attempt, isOwned(path, by: uid) {
             // Locked or write-protected files of the user's own can be opened up without a password.
-            Shell.run("/usr/bin/chflags", ["-R", "nouchg", path])
-            Shell.run("/bin/chmod", ["-R", "u+rwX", path])
+            Shell.run("/usr/bin/chflags", ["-R", "nouchg", path], timeout: 900)
+            Shell.run("/bin/chmod", ["-R", "u+rwX", path], timeout: 900)
             attempt = attemptRemoval(path, mode: mode)
         }
         return attempt
@@ -189,6 +203,11 @@ public struct Remover: Sendable {
     static func exists(_ path: String) -> Bool {
         var info = stat()
         return lstat(path, &info) == 0
+    }
+
+    private static func isGuardedBySystem(_ path: String) -> Bool {
+        var info = stat()
+        return lstat(path, &info) == 0 && Assembler.isGuardedBySystem(info)
     }
 
     /// The Trash that serves the volume `path` is on.

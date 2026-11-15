@@ -58,6 +58,18 @@ import Testing
         #expect(kind("zoom", "ZoomOpener.app") == .prefix)
     }
 
+    /// Plug-in names are full of these: a short name with a digit or a separator of its own.
+    @Test func shortTermsKeepTheirOwnWordBreaks() {
+        #expect(kind("Pro-Q", "Pro-Q 3.vst3") == .exact)
+        #expect(kind("RX 10", "RX 10 Audio Editor.app") == .prefix)
+        #expect(kind("DX7", "DX7 Presets") == .prefix)
+        #expect(kind("C1", "Waves C1 comp.vst3") == .word)
+        #expect(kind("VST3", "Serum.vst3") == .word)
+        // Still one whole word of the name, nothing longer.
+        #expect(kind("S1", "S1000 Samples") == nil)
+        #expect(kind("DX7", "PDX70.bin") == nil)
+    }
+
     @Test func extensionMatchIsFlagged() throws {
         let term = try #require(SearchTerm("SEB", role: .product))
         let match = try #require(TermMatcher.match(term, in: NameFolding.fold("config.seb")))

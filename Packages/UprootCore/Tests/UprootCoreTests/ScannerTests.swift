@@ -224,9 +224,44 @@ import Testing
         let owned = try #require(result.item(f.sys("/Library/Application Support/VideoKit")))
         #expect(owned.relevance == .medium)
         #expect(owned.reasons.contains(.installedByPackage(id: "us.zoom.pkg.videomeeting")))
+        // Everything in it is the package's, so nothing in it is flagged as someone else's.
+        #expect(owned.unrelatedChildCount == 0)
         #expect(result.item(f.sys("/Library/Application Support/Shared Codecs")) == nil)
         #expect(result.relevance(f.sys("/Library/Application Support/Shared Codecs/zm-codec.dylib")) == .medium)
         #expect(result.item(f.sys("/Library/Application Support/Shared Codecs/other-vendor.dylib")) == nil)
+    }
+
+    /// Packages install through the "/etc", "/var" and "/tmp" links. The link is not their file.
+    @Test func receiptPayloadBehindASystemLinkDoesNotOfferTheLink() async throws {
+        let f = try Fixture()
+        try f.bundle(f.sys("/Applications/Gadget.app"), identifier: "dev.example.gadget")
+        try f.file(f.sys("/private/etc/paths.d/Gadget"))
+        try FileManager.default.createSymbolicLink(atPath: f.sys("/etc"), withDestinationPath: "private/etc")
+        try f.receipt("dev.example.gadget.pkg", payload: ["etc/paths.d/Gadget"])
+
+        let result = await f.scan(["Gadget"])
+        #expect(result.item(f.sys("/etc")) == nil)
+        #expect(!result.items.contains { $0.path.hasPrefix(f.sys("/etc/")) })
+        // The file itself is found once, under its real path, and the package vouches for it.
+        let file = try #require(result.item(f.sys("/private/etc/paths.d/Gadget")))
+        #expect(file.relevance == .high)
+        #expect(file.reasons.contains(.installedByPackage(id: "dev.example.gadget.pkg")))
+    }
+
+    /// A folder the scan cannot read is not an empty one.
+    @Test func vendorFolderWithAnUnreadablePartIsNotTakenWhole() async throws {
+        let f = try Fixture()
+        try f.file(f.user("Library/Application Support/Acme Audio/Reverb One/settings.json"))
+        try f.file(f.user("Library/Application Support/Acme Audio/Licences/another-product.lic"))
+        chmod(f.user("Library/Application Support/Acme Audio/Licences"), 0)
+        defer { chmod(f.user("Library/Application Support/Acme Audio/Licences"), 0o755) }
+
+        let result = await f.scan(["Reverb One"], vendors: ["Acme Audio"])
+        let folder = try #require(result.item(f.user("Library/Application Support/Acme Audio")))
+        #expect(folder.relevance == .medium)
+        #expect(!folder.reasons.contains(.holdsOnlyFoundItems))
+        #expect(folder.unrelatedChildCount == 1)
+        #expect(result.relevance(f.user("Library/Application Support/Acme Audio/Reverb One")) == .high)
     }
 
     @Test func vendorFolderWithOtherProductsStaysUnchecked() async throws {

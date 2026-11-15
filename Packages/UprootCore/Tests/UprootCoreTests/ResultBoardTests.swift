@@ -90,6 +90,19 @@ import Testing
         #expect(sections.doubtful.isEmpty)
     }
 
+    @Test func hidingANestedItemKeepsItOutOfTheRemoval() {
+        var board = board()
+        #expect(board.selection.map(\.id) == ["/vendor", "/prefs.plist"])
+        board.hide(ids: ["/vendor/a"])
+        // The checked folder would have taken the hidden item along; only its other content stays checked.
+        #expect(board.selection.map(\.id) == ["/vendor/b", "/prefs.plist"])
+        #expect(board.item("/vendor")?.unrelatedChildCount == 1)
+        // Checking what is left does not bring the folder back by itself.
+        board.setChecked("/vendor/b", false)
+        board.setChecked("/vendor/b", true)
+        #expect(board.selection.map(\.id) == ["/vendor/b", "/prefs.plist"])
+    }
+
     @Test func removingAnItemTakesNestedOnesAlong() {
         var board = board()
         board.remove(ids: ["/vendor"])

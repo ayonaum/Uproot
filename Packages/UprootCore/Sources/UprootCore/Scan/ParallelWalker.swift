@@ -79,7 +79,13 @@ final class ParallelWalker: @unchecked Sendable {
 
     private func workerLoop() {
         // Never pull iCloud placeholders down from the network just to read their names.
+        // The thread comes from a shared pool and goes back to it, so the setting is undone on
+        // the way out: left on, it would make a later removal on this thread fail on such files.
+        let previous = getiopolicy_np(IOPOL_TYPE_VFS_MATERIALIZE_DATALESS_FILES, IOPOL_SCOPE_THREAD)
         setiopolicy_np(IOPOL_TYPE_VFS_MATERIALIZE_DATALESS_FILES, IOPOL_SCOPE_THREAD, IOPOL_MATERIALIZE_DATALESS_FILES_OFF)
+        defer {
+            if previous >= 0 { setiopolicy_np(IOPOL_TYPE_VFS_MATERIALIZE_DATALESS_FILES, IOPOL_SCOPE_THREAD, previous) }
+        }
 
         var scratch = [UInt8]()
         scratch.reserveCapacity(256)

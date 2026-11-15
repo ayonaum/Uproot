@@ -16,7 +16,11 @@ public enum DiskUsage {
         defer { fts_close(stream) }
 
         var total: Int64 = 0
+        var visited = 0
         while let entry = fts_read(stream) {
+            // A measurement nobody is waiting for any more stops, however big the folder.
+            visited += 1
+            if visited & 0x3FF == 0, Task.isCancelled { break }
             switch Int32(entry.pointee.fts_info) {
             case FTS_F, FTS_SL, FTS_SLNONE, FTS_DEFAULT, FTS_D:
                 if let status = entry.pointee.fts_statp {

@@ -74,6 +74,9 @@ public enum MatchReason: Sendable, Hashable, Codable {
     case insideOtherProgram(owner: String)
     /// A vendor folder with nothing in it but found items.
     case holdsOnlyFoundItems
+    /// Named after an app that ships with macOS, or marked by the system as not to be removed.
+    /// Never preselected; left for the user to judge.
+    case partOfMacOS
 }
 
 /// Extra facts that only some kinds of item have.

@@ -142,6 +142,7 @@ extension MatchReason {
         case .personalLocation: "личная папка"
         case .insideOtherProgram(let owner): "в папке «\(owner)»"
         case .holdsOnlyFoundItems: "внутри только найденное"
+        case .partOfMacOS: "относится к macOS или программе Apple"
         }
     }
 }
@@ -191,6 +192,7 @@ extension RemovalOutcome.Status {
         case .reappeared: "появилось снова"
         case .failed(.accessDenied): "нет доступа — включите полный доступ к диску"
         case .failed(.adminUnavailable): "нужны права администратора"
+        case .failed(.protectedLocation): "стандартная папка или объект macOS — Uproot такие не удаляет"
         case .failed(.message(let message)): message.isEmpty ? "не удалось удалить" : message
         }
     }

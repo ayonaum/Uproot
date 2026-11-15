@@ -14,6 +14,9 @@ public enum RemovalFailure: Sendable, Codable, Hashable {
     case accessDenied
     /// Administrator rights were needed and there was no way to ask for them.
     case adminUnavailable
+    /// A folder macOS or many programs rely on, such as ~/Library/Preferences, or something the
+    /// system has marked as not to be removed. The remover does not touch these.
+    case protectedLocation
     /// The system or a tool gave this explanation.
     case message(String)
 }
@@ -59,9 +62,14 @@ public struct RemovalReport: Sendable, Codable {
     public var succeeded: [RemovalOutcome] { outcomes.filter(\.succeeded) }
     public var problems: [RemovalOutcome] { outcomes.filter { !$0.succeeded } }
 
-    /// Bytes taken off the disk, or moved to the Trash.
+    /// Bytes taken off the disk, or moved to the Trash. What was already gone freed nothing.
     public var bytesRemoved: Int64 {
-        succeeded.reduce(0) { $0 + ($1.size ?? 0) }
+        outcomes.reduce(0) { total, outcome in
+            switch outcome.status {
+            case .trashed, .deleted: total + (outcome.size ?? 0)
+            default: total
+            }
+        }
     }
 }
 

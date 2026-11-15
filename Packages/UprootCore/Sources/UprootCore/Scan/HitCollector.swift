@@ -30,15 +30,18 @@ final class HitCollector: @unchecked Sendable {
 
     private let terms: TermSet
     private let layout: ScanLayout
+    private let placement: PlacementResolver
     private let options: ScanOptions
     private let excludes: [String]
     /// A file search lists matches inside matching folders too, as `find` would.
     private let listsInsideMatches: Bool
     private let state = OSAllocatedUnfairLock(initialState: State())
 
-    init(terms: TermSet, layout: ScanLayout, options: ScanOptions, excludes: [String], listsInsideMatches: Bool = false) {
+    init(terms: TermSet, layout: ScanLayout, placement: PlacementResolver, options: ScanOptions, excludes: [String],
+         listsInsideMatches: Bool = false) {
         self.terms = terms
         self.layout = layout
+        self.placement = placement
         self.options = options
         self.listsInsideMatches = listsInsideMatches
         self.excludes = excludes.map { $0.lowercased() }.filter { !$0.isEmpty }
@@ -81,7 +84,14 @@ final class HitCollector: @unchecked Sendable {
 
         let path = Self.join(parent.path, name)
         if isExcluded(path) { return nil }
-        if type == .directory && layout.skippedNames.contains(name) { return nil }
+        // A place the scan stays out of is not a result either.
+        if type == .directory, layout.skippedNames.contains(name) || layout.skippedPaths.contains(path) { return nil }
+        // A standard folder is nobody's leftover: "Preferences" or "VST3" as a search word must
+        // not offer the folder of that name, nor a link standing in its place. A program search
+        // looks inside it instead; a file search lists it, as `find` would, and the remover refuses it.
+        if !listsInsideMatches, placement.isProtected(path) {
+            return type == .directory ? descend(parent: parent, name: name) : nil
+        }
 
         let isBundle = type == .directory && Bundles.isBundle(name: name)
         // Inside a vendor folder the vendor's name on every file adds nothing; the folder stands for them.

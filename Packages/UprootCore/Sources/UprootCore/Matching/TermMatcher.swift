@@ -33,6 +33,8 @@ public struct SearchTerm: Sendable, Hashable {
     public let text: String
     public let role: Role
     let folded: [UInt8]
+    /// Where the words of the term itself begin, one `Boundary` per byte of `folded`.
+    let boundaries: [UInt8]
     let wordCount: Int
 
     /// Returns nil when the text has fewer than two letters or digits to match on.
@@ -43,6 +45,7 @@ public struct SearchTerm: Sendable, Hashable {
         self.text = trimmed
         self.role = role
         self.folded = folded.bytes
+        self.boundaries = folded.boundaries
         self.wordCount = folded.wordCount
     }
 
@@ -130,9 +133,13 @@ enum TermMatcher {
             let aligned = startBoundary != Boundary.none && endBoundary != Boundary.none
 
             if term.isShort {
-                // A short term must be exactly one word of the name.
+                // A short term must be exactly one word of the name. The breaks the term has
+                // itself, as in "Pro-Q", "DX7" or "RX 10", are part of that word; a break the
+                // term does not have, as in "TkSEb" for "SEB", means the name says something else.
                 guard aligned else { continue }
-                let crossesWords = ((start + 1)..<end).contains { name.boundaries[$0] != Boundary.none }
+                let crossesWords = (1..<needle.count).contains {
+                    name.boundaries[start + $0] != Boundary.none && term.boundaries[$0] == Boundary.none
+                }
                 if crossesWords { continue }
             }
 

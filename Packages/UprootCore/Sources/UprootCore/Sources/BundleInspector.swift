@@ -39,11 +39,32 @@ enum BundleInspector {
         }
         return result.sorted()
     }
+
+    /// Identifiers of the found apps that are Apple's and can be uninstalled like anyone else's:
+    /// Xcode, Keynote, GarageBand. Files named after one of these are that program's leftovers.
+    /// Files named after any other Apple app belong to something built into macOS.
+    static func removableAppleIdentifiers(of hits: [RawHit]) -> [String] {
+        var result = Set<String>()
+        for hit in hits where hit.isBundle && hit.foreignBundle == nil && hit.evaluation.product?.kind == .exact {
+            var status = stat()
+            guard Bundles.pathExtension(of: hit.path) == "app", lstat(hit.path, &status) == 0,
+                  !Assembler.isGuardedBySystem(status),
+                  let identifier = info(atPath: hit.path)?.identifier?.lowercased(),
+                  identifier.hasPrefix("com.apple."), identifier.split(separator: ".").count >= 3 else { continue }
+            result.insert(identifier)
+        }
+        return result.sorted()
+    }
 }
 
 enum PropertyList {
+    /// Property lists are small. A file of gigabytes behind the name of one is not read into memory.
+    static let sizeLimit: off_t = 16 << 20
+
     static func dictionary(atPath path: String) -> [String: Any]? {
-        guard let data = FileManager.default.contents(atPath: path) else { return nil }
+        var info = stat()
+        guard stat(path, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG, info.st_size <= sizeLimit,
+              let data = FileManager.default.contents(atPath: path) else { return nil }
         return (try? PropertyListSerialization.propertyList(from: data, format: nil)) as? [String: Any]
     }
 }

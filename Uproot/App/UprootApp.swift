@@ -9,6 +9,10 @@ enum Launcher {
         if CommandLine.arguments.contains(ElevationHelper.flag) {
             ElevationHelper.runAndExit()
         }
+        if let problem = LaunchOptions().fixtureProblem {
+            FileHandle.standardError.write(Data("Uproot: \(problem)\n".utf8))
+            exit(2)
+        }
         UprootApp.main()
     }
 }
@@ -36,13 +40,13 @@ struct UprootApp: App {
             CommandMenu("Поиск") {
                 Button("Найти", action: model.startScan)
                     .keyboardShortcut("r", modifiers: .command)
-                    .disabled(model.isScanning)
+                    .disabled(model.isScanning || model.removal != nil)
                 Button("Остановить", action: model.stopScan)
                     .keyboardShortcut(".", modifiers: .command)
                     .disabled(!model.isScanning)
                 Divider()
                 Button("Удалить отмеченное…", action: model.requestRemoval)
-                    .disabled(model.board.selection.isEmpty)
+                    .disabled(model.phase != .results || model.removal != nil || model.board.selection.isEmpty)
                 Button("Снять все отметки", action: model.uncheckAll)
                     .disabled(model.board.checked.isEmpty)
                 Divider()
